@@ -1,0 +1,532 @@
+from __future__ import annotations
+
+import math
+import random
+import sys
+import threading
+import time
+import tkinter as tk
+from dataclasses import dataclass
+from tkinter import messagebox
+
+APP_TITLE = "Conquest World - Crystal Caves Spelling Quest"
+BG = "#07152f"
+PANEL = "#dff8ff"
+NAVY = "#15335f"
+CAVE = "#102c58"
+CYAN = "#67e8f9"
+LIGHT = "#eefcff"
+GOLD = "#f59e0b"
+GREEN = "#22c55e"
+RED = "#ef4444"
+FONT = "Times New Roman"
+
+
+@dataclass(frozen=True)
+class Round:
+    word: str
+    clue: str
+    picture: str
+    colour: str
+    level: str
+    pattern: str
+
+
+# Five progressive levels for approximately Year 3 / age-eight practice.
+ROUNDS = [
+    Round("FROG", "A green animal that jumps", "FROG", "#34d399", "Level 1", "Familiar sounds"),
+    Round("STAR", "It shines in the night sky", "STAR", "#a78bfa", "Level 1", "Familiar sounds"),
+    Round("APPLE", "A crunchy fruit that can be red or green", "APPLE", "#fb7185", "Level 1", "Double letters"),
+    Round("TRAIN", "It travels along railway tracks", "TRAIN", "#38bdf8", "Level 1", "Vowel team ai"),
+    Round("BRIDGE", "It helps people cross over water", "BRIDGE", "#f59e0b", "Level 2", "dge ending"),
+    Round("KITCHEN", "A room where food is prepared", "KITCHEN", "#22c55e", "Level 2", "Consonant pattern tch"),
+    Round("SPRING", "The season when many flowers grow", "SPRING", "#84cc16", "Level 2", "Consonant blend spr"),
+    Round("THOUGHT", "An idea inside your mind", "THOUGHT", "#8b5cf6", "Level 2", "Tricky vowel pattern"),
+    Round("KNIGHT", "A warrior from an old castle story", "KNIGHT", "#64748b", "Level 3", "Silent k"),
+    Round("WRITE", "To make words using letters", "WRITE", "#06b6d4", "Level 3", "Silent w"),
+    Round("CLIMB", "To move upward using hands and feet", "CLIMB", "#f97316", "Level 3", "Silent b"),
+    Round("WRIST", "The joint between your hand and arm", "WRIST", "#ec4899", "Level 3", "Silent w"),
+    Round("HELPFUL", "Ready and willing to give assistance", "HELPFUL", "#14b8a6", "Level 4", "Suffix ful"),
+    Round("UNKIND", "Not friendly or considerate", "UNKIND", "#ef4444", "Level 4", "Prefix un"),
+    Round("REPLAY", "To play something again", "REPLAY", "#3b82f6", "Level 4", "Prefix re"),
+    Round("KINDNESS", "The quality of being caring and friendly", "KINDNESS", "#e879f9", "Level 4", "Suffix ness"),
+    Round("STATION", "A place where trains stop", "STATION", "#0ea5e9", "Level 5", "tion ending"),
+    Round("DIRECTION", "The way something is moving or pointing", "DIRECTION", "#6366f1", "Level 5", "Multisyllabic tion"),
+    Round("ATTENTION", "Careful listening and watching", "ATTENTION", "#f43f5e", "Level 5", "Double letter and tion"),
+    Round("SUBTRACTION", "Taking one number away from another", "SUBTRACTION", "#f59e0b", "Level 5", "Long challenge word"),
+]
+
+# A small original, program-generated lullaby-style melody. No audio file is required.
+MUSIC_NOTES = [
+    (262, 420), (330, 420), (392, 560), (330, 300),
+    (294, 420), (349, 420), (440, 560), (349, 300),
+    (262, 420), (330, 420), (392, 420), (523, 650),
+    (392, 420), (330, 420), (294, 420), (262, 700),
+]
+
+
+class LetterTile(tk.Label):
+    """A large draggable and clickable letter tile."""
+
+    def __init__(self, master, game: "SpellingGame", letter: str, tile_id: int):
+        super().__init__(
+            master,
+            text=letter,
+            font=(FONT, 28, "bold"),
+            bg="#bae6fd",
+            fg=NAVY,
+            width=3,
+            height=1,
+            bd=4,
+            relief="raised",
+            cursor="hand2",
+            padx=6,
+            pady=9,
+        )
+        self.game = game
+        self.letter = letter
+        self.tile_id = tile_id
+        self.dragging = False
+        self.start_x = 0
+        self.start_y = 0
+        self.bind("<ButtonPress-1>", self.begin_drag)
+        self.bind("<B1-Motion>", self.drag)
+        self.bind("<ButtonRelease-1>", self.drop)
+        self.bind("<Return>", lambda _event: self.game.attempt_tile(self))
+        self.configure(takefocus=True)
+
+    def begin_drag(self, event):
+        self.dragging = False
+        self.start_x = event.x_root
+        self.start_y = event.y_root
+        self.lift()
+
+    def drag(self, event):
+        if abs(event.x_root - self.start_x) + abs(event.y_root - self.start_y) > 6:
+            self.dragging = True
+        self.place(
+            x=event.x_root - self.master.winfo_rootx() - self.winfo_width() // 2,
+            y=event.y_root - self.master.winfo_rooty() - self.winfo_height() // 2,
+        )
+
+    def drop(self, event):
+        over_target = self.game.point_in_widget(event.x_root, event.y_root, self.game.drop_frame)
+        if self.dragging and over_target:
+            self.game.attempt_tile(self)
+        elif not self.dragging:
+            self.game.attempt_tile(self)
+        else:
+            self.game.layout_tiles()
+
+
+class SpellingGame(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title(APP_TITLE)
+        self.geometry("1180x820")
+        self.minsize(980, 700)
+        self.configure(bg=BG)
+
+        self.round_index = 0
+        self.score = 0
+        self.placed: list[str] = []
+        self.tiles: list[LetterTile] = []
+        self.sound_on = True
+        self.music_on = True
+        self.music_stop_event = threading.Event()
+        self.music_thread = None
+        self.animation_phase = 0
+        self.completed = False
+        self.auto_next_job = None
+        self.countdown_value = 0
+        self.speech_process = None
+        self.speech_lock = threading.Lock()
+
+        self.protocol("WM_DELETE_WINDOW", self.close_game)
+        self.build_ui()
+        self.start_round(0)
+        self.animate_scene()
+        self.start_music()
+
+    @property
+    def current_round(self) -> Round:
+        return ROUNDS[self.round_index]
+
+    def build_ui(self):
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True, padx=18, pady=18)
+
+        self.card = tk.Frame(outer, bg=PANEL, bd=4, relief="ridge")
+        self.card.pack(fill="both", expand=True)
+
+        header = tk.Frame(self.card, bg=PANEL)
+        header.pack(fill="x", padx=22, pady=(18, 8))
+        tk.Label(header, text="CONQUEST WORLD", bg=PANEL, fg="#087da4", font=(FONT, 12, "bold")).pack(anchor="w")
+        tk.Label(header, text="Crystal Caves Spelling Quest", bg=PANEL, fg=NAVY, font=(FONT, 29, "bold")).pack(anchor="w")
+        tk.Label(
+            header,
+            text="Listen to the clue, then drag each crystal letter into the correct position.",
+            bg=PANEL,
+            fg="#475569",
+            font=(FONT, 14, "bold"),
+        ).pack(anchor="w", pady=(3, 0))
+
+        buttons = tk.Frame(header, bg=PANEL)
+        buttons.place(relx=1.0, rely=0.0, anchor="ne")
+        self.sound_button = tk.Button(buttons, text="Sound On", command=self.toggle_sound, font=(FONT, 12, "bold"), bg="white", fg=NAVY, padx=12, pady=8)
+        self.sound_button.pack(side="left", padx=4)
+        self.music_button = tk.Button(buttons, text="Music On", command=self.toggle_music, font=(FONT, 12, "bold"), bg="#e0f2fe", fg=NAVY, padx=12, pady=8)
+        self.music_button.pack(side="left", padx=4)
+        tk.Button(buttons, text="Reset Round", command=self.reset_round, font=(FONT, 12, "bold"), bg=NAVY, fg="white", padx=12, pady=8).pack(side="left", padx=4)
+
+        stats = tk.Frame(self.card, bg=PANEL)
+        stats.pack(fill="x", padx=22, pady=8)
+        self.round_stat = self.stat_card(stats, "ROUND", "1 of 5")
+        self.score_stat = self.stat_card(stats, "CRYSTAL POINTS", "0")
+        self.clue_button = tk.Button(stats, text="Play Spoken Clue", command=self.play_clue, font=(FONT, 15, "bold"), bg="#0e7490", fg="white", padx=20, pady=12)
+        self.clue_button.pack(side="left", fill="both", expand=True, padx=5)
+
+        self.cave = tk.Frame(self.card, bg=CAVE, bd=4, relief="sunken")
+        self.cave.pack(fill="both", expand=True, padx=22, pady=(8, 14))
+
+        self.scene_canvas = tk.Canvas(self.cave, height=130, bg=CAVE, highlightthickness=0)
+        self.scene_canvas.pack(fill="x", padx=10, pady=(8, 0))
+        self.level_var = tk.StringVar()
+        tk.Label(self.cave, textvariable=self.level_var, bg=CAVE, fg="#fde68a", font=(FONT, 13, "bold")).pack(pady=(0, 2))
+        self.clue_var = tk.StringVar()
+        tk.Label(self.cave, textvariable=self.clue_var, bg=CAVE, fg="white", font=(FONT, 18, "bold")).pack(pady=(0, 8))
+
+        self.drop_frame = tk.Frame(self.cave, bg="#163b6c", bd=3, relief="ridge", height=105)
+        self.drop_frame.pack(fill="x", padx=42, pady=8)
+        self.drop_frame.pack_propagate(False)
+
+        self.message_var = tk.StringVar(value="Drag the letters into the glowing boxes.")
+        self.message_label = tk.Label(self.cave, textvariable=self.message_var, bg=CAVE, fg="#cffafe", font=(FONT, 14, "bold"))
+        self.message_label.pack(pady=5)
+
+        self.tile_area = tk.Frame(self.cave, bg="#173969", bd=2, relief="ridge", height=125)
+        self.tile_area.pack(fill="x", padx=42, pady=(5, 12))
+        self.tile_area.pack_propagate(False)
+        self.tile_area.bind("<Configure>", lambda _event: self.layout_tiles())
+
+        self.celebration = tk.Frame(self.card, bg="#fef3c7", bd=3, relief="ridge")
+        self.celebration_text = tk.Label(self.celebration, bg="#fef3c7", fg="#92400e", font=(FONT, 15, "bold"), justify="left")
+        self.celebration_text.pack(side="left", padx=18, pady=12)
+        self.next_button = tk.Button(self.celebration, text="Next Word", command=self.next_round, bg=GOLD, fg="white", font=(FONT, 15, "bold"), padx=20, pady=10)
+        self.next_button.pack(side="right", padx=16, pady=10)
+
+        self.progress_canvas = tk.Canvas(self.card, height=18, bg="white", highlightthickness=1, highlightbackground="#bfdbfe")
+        self.progress_canvas.pack(fill="x", padx=24, pady=(0, 16))
+        self.progress_canvas.bind("<Configure>", lambda _event: self.draw_progress())
+
+    def stat_card(self, parent, title, value):
+        frame = tk.Frame(parent, bg="white", bd=2, relief="ridge")
+        frame.pack(side="left", fill="both", expand=True, padx=5)
+        tk.Label(frame, text=title, bg="white", fg="#64748b", font=(FONT, 10, "bold")).pack(anchor="w", padx=12, pady=(7, 0))
+        label = tk.Label(frame, text=value, bg="white", fg=NAVY, font=(FONT, 19, "bold"))
+        label.pack(anchor="w", padx=12, pady=(0, 7))
+        return label
+
+    def create_tiles(self):
+        for tile in self.tiles:
+            tile.destroy()
+        letters = list(self.current_round.word)
+        random.shuffle(letters)
+        self.tiles = [LetterTile(self.tile_area, self, letter, index) for index, letter in enumerate(letters)]
+        self.after(40, self.layout_tiles)
+
+    def layout_tiles(self):
+        if not self.tiles or not self.tile_area.winfo_exists():
+            return
+        active = [tile for tile in self.tiles if tile.winfo_exists()]
+        if not active:
+            return
+        width = max(self.tile_area.winfo_width(), 600)
+        count = len(active)
+        tile_width = 82 if count <= 7 else 66 if count <= 9 else 55
+        gap = 15 if count <= 7 else 8 if count <= 9 else 5
+        total = len(active) * tile_width + max(0, len(active) - 1) * gap
+        x = max(15, (width - total) // 2)
+        for tile in active:
+            tile.config(font=(FONT, 28 if tile_width >= 66 else 22, "bold"))
+            tile.place(x=x, y=20, width=tile_width, height=78)
+            x += tile_width + gap
+
+    def draw_slots(self):
+        for widget in self.drop_frame.winfo_children():
+            widget.destroy()
+        for index, letter in enumerate(self.current_round.word):
+            shown = self.placed[index] if index < len(self.placed) else ""
+            colour = "#dff8ff" if shown else "#204a7b"
+            fg = NAVY if shown else "#204a7b"
+            slot = tk.Label(self.drop_frame, text=shown, bg=colour, fg=fg, font=(FONT, 27, "bold"), width=3, height=1, bd=4, relief="ridge")
+            slot.pack(side="left", expand=True, padx=6, pady=13)
+
+    def cancel_auto_next(self):
+        if self.auto_next_job is not None:
+            try:
+                self.after_cancel(self.auto_next_job)
+            except Exception:
+                pass
+            self.auto_next_job = None
+
+    def start_round(self, index: int):
+        self.cancel_auto_next()
+        self.round_index = index
+        self.placed = []
+        self.completed = False
+        self.celebration.pack_forget()
+        self.round_stat.config(text=f"{index + 1} of {len(ROUNDS)}")
+        self.score_stat.config(text=str(self.score))
+        self.level_var.set(f"{self.current_round.level}  |  {self.current_round.pattern}")
+        self.clue_var.set(self.current_round.clue)
+        self.message_var.set("Drag the letters into the glowing boxes.")
+        self.message_label.config(fg="#cffafe")
+        self.draw_slots()
+        self.create_tiles()
+        self.redraw_picture()
+        self.draw_progress()
+        self.after(350, self.play_clue)
+
+    def attempt_tile(self, tile: LetterTile):
+        if self.completed or not tile.winfo_exists():
+            return
+        expected = self.current_round.word[len(self.placed)]
+        if tile.letter == expected:
+            self.placed.append(tile.letter)
+            tile.destroy()
+            self.tiles = [item for item in self.tiles if item is not tile]
+            self.draw_slots()
+            self.layout_tiles()
+            self.message_var.set("Great! Now find the next letter.")
+            self.message_label.config(fg="#bbf7d0")
+            self.speak(tile.letter)
+            if "".join(self.placed) == self.current_round.word:
+                self.complete_round()
+        else:
+            self.message_var.set("That letter belongs somewhere else. Try another one.")
+            self.message_label.config(fg="#fecaca")
+            self.shake(tile)
+            self.speak("Try another letter")
+
+    def complete_round(self):
+        self.completed = True
+        self.score += 10
+        self.score_stat.config(text=str(self.score))
+        word = self.current_round.word
+        self.message_var.set(f"Wonderful! You spelled {word}!")
+        self.message_label.config(fg="#fde68a")
+        self.next_button.config(text="Next Word Now" if self.round_index < len(ROUNDS) - 1 else "Finish Quest")
+        self.celebration.pack(fill="x", padx=22, pady=(0, 8), before=self.progress_canvas)
+        self.draw_progress()
+        self.speak(f"Wonderful. You spelled {word.lower()}")
+        self.sparkle_burst()
+        self.countdown_value = 4
+        self.update_auto_next_countdown()
+
+    def update_auto_next_countdown(self):
+        if not self.completed:
+            return
+        word = self.current_round.word
+        if self.countdown_value <= 0:
+            self.auto_next_job = None
+            self.next_round()
+            return
+        if self.round_index < len(ROUNDS) - 1:
+            self.celebration_text.config(text=f"CRYSTAL COLLECTED!  +10 points for {word}\nNext spelling round begins in {self.countdown_value}...")
+        else:
+            self.celebration_text.config(text=f"FINAL CRYSTAL COLLECTED!  +10 points for {word}\nQuest results open in {self.countdown_value}...")
+        self.countdown_value -= 1
+        self.auto_next_job = self.after(1000, self.update_auto_next_countdown)
+
+    def next_round(self):
+        self.cancel_auto_next()
+        if self.round_index < len(ROUNDS) - 1:
+            self.start_round(self.round_index + 1)
+        else:
+            self.speak("You completed the Crystal Caves spelling quest")
+            messagebox.showinfo("Quest complete", f"You completed the Crystal Caves spelling quest!\n\nFinal score: {self.score} crystal points.", parent=self)
+
+    def reset_round(self):
+        self.cancel_auto_next()
+        self.placed = []
+        self.completed = False
+        self.celebration.pack_forget()
+        self.message_var.set("Try again. Listen, look and build the word.")
+        self.message_label.config(fg="#cffafe")
+        self.draw_slots()
+        self.create_tiles()
+        self.draw_progress()
+
+    def point_in_widget(self, root_x, root_y, widget):
+        return widget.winfo_rootx() <= root_x <= widget.winfo_rootx() + widget.winfo_width() and widget.winfo_rooty() <= root_y <= widget.winfo_rooty() + widget.winfo_height()
+
+    def shake(self, widget, step=0):
+        if not widget.winfo_exists():
+            return
+        offsets = [-12, 12, -9, 9, -5, 5, 0]
+        if step >= len(offsets):
+            self.layout_tiles()
+            return
+        info = widget.place_info()
+        base_x = int(float(info.get("x", 0)))
+        widget.place_configure(x=base_x + offsets[step])
+        self.after(55, lambda: self.shake(widget, step + 1))
+
+    def start_music(self):
+        if not self.music_on or (self.music_thread and self.music_thread.is_alive()):
+            return
+        self.music_stop_event.clear()
+        self.music_thread = threading.Thread(target=self.music_loop, daemon=True)
+        self.music_thread.start()
+
+    def music_loop(self):
+        if sys.platform != "win32":
+            return
+        try:
+            import winsound
+            while not self.music_stop_event.is_set():
+                for frequency, duration in MUSIC_NOTES:
+                    if self.music_stop_event.is_set():
+                        return
+                    # Quiet, separated notes make the melody less intrusive.
+                    winsound.Beep(frequency, duration)
+                    if self.music_stop_event.wait(0.10):
+                        return
+                if self.music_stop_event.wait(1.2):
+                    return
+        except Exception:
+            return
+
+    def toggle_music(self):
+        self.music_on = not self.music_on
+        self.music_button.config(text="Music On" if self.music_on else "Music Off")
+        if self.music_on:
+            self.start_music()
+        else:
+            self.music_stop_event.set()
+
+    def toggle_sound(self):
+        self.sound_on = not self.sound_on
+        self.sound_button.config(text="Sound On" if self.sound_on else "Sound Off")
+        if not self.sound_on:
+            self.stop_speech()
+
+    def play_clue(self):
+        self.speak(f"{self.current_round.clue}. Spell {self.current_round.word.lower()}")
+
+    def stop_speech(self):
+        with self.speech_lock:
+            process = self.speech_process
+            self.speech_process = None
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+    def speak(self, text: str):
+        if not self.sound_on:
+            return
+        self.stop_speech()
+
+        def worker():
+            try:
+                if sys.platform == "win32":
+                    import subprocess
+                    safe = text.replace("'", "''")
+                    script = (
+                        "Add-Type -AssemblyName System.Speech; "
+                        "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                        "$s.Rate=-1; $s.Volume=100; "
+                        f"$s.Speak('{safe}')"
+                    )
+                    process = subprocess.Popen(
+                        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    with self.speech_lock:
+                        self.speech_process = process
+                    process.wait()
+                else:
+                    try:
+                        import pyttsx3
+                        engine = pyttsx3.init()
+                        engine.setProperty("rate", 155)
+                        engine.say(text)
+                        engine.runAndWait()
+                    except Exception:
+                        pass
+            finally:
+                with self.speech_lock:
+                    self.speech_process = None
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def redraw_picture(self):
+        c = self.scene_canvas
+        c.delete("all")
+        w = max(c.winfo_width(), 700)
+        colour = self.current_round.colour
+        c.create_oval(w / 2 - 62, 5, w / 2 + 62, 125, fill="#173969", outline=colour, width=5)
+        word = self.current_round.picture
+        if word == "CAT":
+            c.create_oval(w/2-28,35,w/2+28,92,fill=colour,outline="white",width=3);c.create_polygon(w/2-26,42,w/2-13,18,w/2-5,45,fill=colour);c.create_polygon(w/2+26,42,w/2+13,18,w/2+5,45,fill=colour)
+            c.create_oval(w/2-13,54,w/2-7,60,fill=NAVY);c.create_oval(w/2+7,54,w/2+13,60,fill=NAVY);c.create_line(w/2,64,w/2,72,fill=NAVY,width=2)
+        elif word == "FROG":
+            c.create_oval(w/2-37,43,w/2+37,102,fill=colour,outline="white",width=3);c.create_oval(w/2-31,27,w/2-5,55,fill=colour);c.create_oval(w/2+5,27,w/2+31,55,fill=colour);c.create_oval(w/2-23,36,w/2-15,44,fill=NAVY);c.create_oval(w/2+15,36,w/2+23,44,fill=NAVY);c.create_arc(w/2-19,60,w/2+19,86,start=200,extent=140,style="arc",outline=NAVY,width=3)
+        elif word == "STAR":
+            points=[]
+            for i in range(10):
+                angle=-math.pi/2+i*math.pi/5;radius=48 if i%2==0 else 21;points.extend([w/2+math.cos(angle)*radius,65+math.sin(angle)*radius])
+            c.create_polygon(points,fill=colour,outline="white",width=3)
+        elif word == "APPLE":
+            c.create_oval(w/2-42,38,w/2+8,103,fill=colour,outline="white",width=3);c.create_oval(w/2-8,38,w/2+42,103,fill=colour,outline="white",width=3);c.create_line(w/2,42,w/2+6,22,fill="#7c4a21",width=7);c.create_oval(w/2+3,18,w/2+30,34,fill="#4ade80",outline="white")
+        elif word == "CASTLE":
+            c.create_rectangle(w/2-45,47,w/2+45,105,fill=colour,outline="white",width=3);c.create_rectangle(w/2-58,30,w/2-25,105,fill=colour,outline="white",width=3);c.create_rectangle(w/2+25,30,w/2+58,105,fill=colour,outline="white",width=3);c.create_arc(w/2-11,73,w/2+11,111,start=0,extent=180,fill=CAVE,outline="white")
+        else:
+            c.create_text(w/2,65,text=word[0],fill="white",font=(FONT,48,"bold"))
+            c.create_text(w/2,108,text=f"{len(word)} letters",fill="#cffafe",font=(FONT,11,"bold"))
+
+    def animate_scene(self):
+        self.animation_phase += 1
+        if self.scene_canvas.winfo_exists():
+            for index in range(9):
+                x = 30 + (index * 127 + self.animation_phase * (index % 3 + 1)) % max(self.scene_canvas.winfo_width() - 60, 600)
+                y = 18 + (index * 29) % 90
+                tag = f"star{index}"
+                self.scene_canvas.delete(tag)
+                size = 2 + ((self.animation_phase + index) % 4)
+                self.scene_canvas.create_oval(x-size,y-size,x+size,y+size,fill=CYAN,outline="",tags=tag)
+        self.after(100, self.animate_scene)
+
+    def sparkle_burst(self):
+        for i in range(18):
+            x = random.randint(80, max(100, self.scene_canvas.winfo_width()-80))
+            y = random.randint(18, 110)
+            size = random.randint(2, 6)
+            self.scene_canvas.create_oval(x-size,y-size,x+size,y+size,fill=GOLD,outline="",tags="burst")
+        self.after(1000, lambda: self.scene_canvas.delete("burst"))
+
+    def draw_progress(self):
+        if not hasattr(self, "progress_canvas"):
+            return
+        c = self.progress_canvas
+        c.delete("all")
+        width = max(c.winfo_width(), 300)
+        ratio = (self.round_index + (1 if self.completed else 0)) / len(ROUNDS)
+        c.create_rectangle(0, 0, width, 18, fill="white", outline="")
+        c.create_rectangle(0, 0, width * ratio, 18, fill="#2563eb", outline="")
+
+    def close_game(self):
+        self.cancel_auto_next()
+        self.music_stop_event.set()
+        self.stop_speech()
+        self.destroy()
+
+
+if __name__ == "__main__":
+    SpellingGame().mainloop()
+
