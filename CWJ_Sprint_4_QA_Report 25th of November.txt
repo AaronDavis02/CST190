@@ -1,0 +1,51 @@
+QUALITY ASSURANCE TEST REPORT
+======================================================================
+Week 10 focus: software testing, functional/non-functional testing, black-box/white-box testing, and manual/automated testing.
+
+QA-01 - Sign/login tests
+Requirement: Functional
+Approach: Black-box
+Execution: Manual
+Status: Pass
+Owner: Team Ownership
+Preconditions: based off of Figma creation so far
+Steps: go to Figma page, try creating account/signing in as admin or editor
+Expected: Able to sign in succesffully as guest/admin/editor
+Actual: Able to sign in successfully
+Evidence: Not entered
+
+QA-02 - Sound quality test of first or original coding
+Requirement: Functional
+Approach: White-box
+Execution: Manual
+Status: Fail
+Owner: Brendan
+Preconditions: Based off of source code that we had and tried to modify.
+Steps: 1.Access source code and run it. 2. Go through stages whilst playing sound and testing voice quality. 3. See if it was child and school friendly.
+Expected: Sound to be of reasonable quality to work in actual software.
+Actual: Fail
+Evidence: Unable to reference apart from our tests
+
+QA-03 - Functionality Testing Of Levels
+Requirement: Functional
+Approach: Black-box
+Execution: Manual
+Status: Pass
+Owner: Team Ownership
+Preconditions: Based off of Figma conditions and code that we have.
+Steps: 1. Went through each level. 2. Tried and tested all levels that were available at the time. 3. Did we find any issues with how they ran.
+Expected: Went through all available levels and they actually worked.
+Actual: Pass
+Evidence: Not entered
+
+QA-04 - Did the code load and play without bugs
+Requirement: Non-functional
+Approach: White-box
+Execution: Automated
+Status: Pass
+Owner: Brendan
+Preconditions: Based off of current codes
+Steps: 1. Access and load code. 2. AI simulation of code. 3. Run programmed code. 4. See results.
+Expected: All code to run successfully after pressing the play run code button or running as web app or desktop app.
+Actual: Successful result
+Evidence: Team observed actual code running previsouly and 1 client demonstration worked successfully as well.
